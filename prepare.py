@@ -43,7 +43,7 @@ def gradient_scheme(bvals_path, bvecs_path, nvol=None, threshold=50.):
     if len(dw)==6:
         warnings.warn('Exactly six tensor measurements: tensor consistency has no residual degrees of freedom')
     if b[dw].max()>1500:
-        warnings.warn('High-b data supplied: the single-tensor approximation may be inaccurate; consider a DTI shell')
+        warnings.warn('High-b data supplied the single-tensor approximation may be inaccurate')
     return b,g,low,dw
 
 def pull_jacobian_lps(
@@ -246,8 +246,41 @@ def main():
     qc = sub.add_parser('qc')
     for key in ['fixed','moving','mask','atlas-mask','out']:
         qc.add_argument('--'+key,required=True)
+    qc.add_argument('--min-dice',type=float,default=.85)
+    pose = sub.add_parser('pose')
+    for key in ['mask','atlas-mask','out']:
+        pose.add_argument('--'+key,required=True)
+    overlap = sub.add_parser('overlap')
+    overlap.add_argument('--mask',required=True)
+    overlap.add_argument('--atlas-mask',required=True)
+    overlap.add_argument('--min-dice',type=float,default=.85)
     a = p.parse_args()
-    if a.command == 'check':
+    if a.command == 'pose':
+        from scipy.io import savemat
+        out = Path(a.out)
+        out.mkdir(exist_ok=True)
+        centers, spreads = [], []
+        # Initialize the fixed-to-moving affine from physical brain-mask moments.
+        for path,name in [(a.mask,'subject'),(a.atlas_mask,'atlas')]:
+            im = nib.load(path)
+            mask = im.get_fdata()>.5
+            if not mask.any(): raise ValueError('Empty pose mask: '+path)
+            xyz = nib.affines.apply_affine(im.affine,np.argwhere(mask))*[-1,-1,1]
+            centers.append(xyz.mean(0)); spreads.append(xyz.std(0))
+            spacing = np.linalg.norm(im.affine[:3,:3],axis=0)
+            sdf = ndimage.distance_transform_edt(mask,sampling=spacing)-ndimage.distance_transform_edt(~mask,sampling=spacing)
+            save(np.clip(sdf,-30,30)/30,im,out/f'{name}_distance.nii.gz')
+        matrix = np.diag(spreads[1]/spreads[0])
+        savemat(out/'mask_pose_initial.mat',{'AffineTransform_double_3_3':np.r_[matrix.ravel(),centers[1]-centers[0]][:,None],
+                'fixed':centers[0][:,None]},format='4')
+    elif a.command == 'overlap':
+        im,am = nib.load(a.mask),nib.load(a.atlas_mask)
+        same_grid(im,am)
+        m,n = im.get_fdata()>.5,am.get_fdata()>.5
+        dice = float(2*(m&n).sum()/max(m.sum()+n.sum(),1))
+        print('Atlas mask Dice:',dice,flush=True)
+        if dice<a.min_dice: raise RuntimeError('Poor atlas overlap; stopping before further processing')
+    elif a.command == 'check':
         im = nib.load(a.dwi)
         if im.ndim != 4:
             raise ValueError('Expected a 4D diffusion sequence')
@@ -319,6 +352,8 @@ def main():
         plt.close(fig)
         (out/'registration_qc.json').write_text(json.dumps(dict(brain_dice=float(dice),
              note='Inspect registration.png before interpreting correction'),indent=2))
+        if dice<a.min_dice:
+            raise RuntimeError('Poor atlas registration; inspect registration.png before correction')
 
 
 if __name__ == '__main__':

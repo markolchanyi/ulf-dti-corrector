@@ -141,16 +141,28 @@ mri_convert "$TMP/supersynth/SynthT2.mgz" "$TMP/synth_t2.nii.gz" -rl "$PRE/mean_
 N4BiasFieldCorrection -d 3 -i "$TMP/mean_b0_masked.nii.gz" -x "$PRE/mask.nii.gz" -s 2 \
     -b '[100]' -c '[50x50x30x20,1e-7]' -o "$TMP/b0_n4.nii.gz"
 "$PYTHON" "$DIR/prepare.py" mask --input "$TMP/b0_n4.nii.gz" --mask "$PRE/mask.nii.gz" --out "$TMP/fixed.nii.gz"
-FIXED="$TMP/fixed.nii.gz"
-antsRegistration -d 3 --float 0 --random-seed 20260807 --output "[$TMP/base_,$TMP/atlas_t2_base.nii.gz]" \
+FIXED="$TMP/synth_t2_masked.nii.gz"
+# Match the successful mask-guided pose registration before SyN.
+"$PYTHON" "$DIR/prepare.py" pose --mask "$PRE/mask.nii.gz" --atlas-mask "$ATLAS/mask.nii.gz" --out "$TMP/pose_inputs"
+antsRegistration -d 3 --float 0 --random-seed 20260927 --output "[$TMP/pose_,$TMP/atlas_t2_pose.nii.gz]" \
+    --interpolation Linear --winsorize-image-intensities '[0.005,0.995]' --use-histogram-matching 0 \
+    --initial-moving-transform "$TMP/pose_inputs/mask_pose_initial.mat" \
+    --masks '[NULL,NULL]' --transform 'Rigid[0.02]' \
+    --metric "MI[$FIXED,$ATLAS/t2.nii.gz,0.5,32,Regular,0.5]" \
+    --metric "MeanSquares[$TMP/pose_inputs/subject_distance.nii.gz,$TMP/pose_inputs/atlas_distance.nii.gz,0.5,0]" \
+    --convergence '[500x300x150,1e-7,20]' --shrink-factors 4x2x1 --smoothing-sigmas 2x1x0vox \
+    --masks '[NULL,NULL]' --transform 'Affine[0.02]' \
+    --metric "MI[$FIXED,$ATLAS/t2.nii.gz,0.5,32,Regular,0.5]" \
+    --metric "MeanSquares[$TMP/pose_inputs/subject_distance.nii.gz,$TMP/pose_inputs/atlas_distance.nii.gz,0.5,0]" \
+    --convergence '[500x300x150,1e-7,20]' --shrink-factors 4x2x1 --smoothing-sigmas 2x1x0vox
+antsApplyTransforms -d 3 -i "$ATLAS/mask.nii.gz" -r "$FIXED" -o "$TMP/atlas_mask_pose.nii.gz" \
+    -n NearestNeighbor -t "$TMP/pose_0GenericAffine.mat"
+"$PYTHON" "$DIR/prepare.py" overlap --mask "$PRE/mask.nii.gz" --atlas-mask "$TMP/atlas_mask_pose.nii.gz"
+antsRegistration -d 3 --float 0 --random-seed 20260927 --output "[$TMP/base_,$TMP/atlas_t2_base.nii.gz]" \
     --interpolation 'BSpline[3]' --winsorize-image-intensities '[0.005,0.995]' --use-histogram-matching 1 \
-    --initial-moving-transform "[$FIXED,$ATLAS/t2.nii.gz,1]" --masks "[$PRE/mask.nii.gz,$ATLAS/mask.nii.gz]" \
-    --transform 'Rigid[0.1]' --metric "MI[$FIXED,$ATLAS/t2.nii.gz,1,32,Regular,0.30]" \
-    --convergence '[1000x500x250x100,1e-6,10]' --shrink-factors 8x4x2x1 --smoothing-sigmas 3x2x1x0vox \
-    --transform 'Affine[0.1]' --metric "MI[$FIXED,$ATLAS/t2.nii.gz,1,32,Regular,0.30]" \
-    --convergence '[1000x500x250x100,1e-6,10]' --shrink-factors 8x4x2x1 --smoothing-sigmas 3x2x1x0vox \
-    --transform 'SyN[0.1,3,0]' --metric "CC[$FIXED,$ATLAS/t2.nii.gz,1,4]" \
-    --convergence '[120x90x60x30,1e-7,12]' --shrink-factors 8x4x2x1 --smoothing-sigmas 3x2x1x0vox
+    --initial-moving-transform "$TMP/pose_0GenericAffine.mat" --masks "[$PRE/mask.nii.gz,$ATLAS/mask.nii.gz]" \
+    --transform 'SyN[0.05,3,1]' --metric "CC[$FIXED,$ATLAS/t2.nii.gz,1,2]" \
+    --convergence '[100x70x40,1e-7,15]' --shrink-factors 4x2x1 --smoothing-sigmas 2x1x0vox
 antsApplyTransforms -d 3 -i "$ATLAS/seg.nii.gz" -r "$FIXED" -o "$TMP/atlas_seg_base.nii.gz" \
     -n GenericLabel -t "$TMP/base_1Warp.nii.gz" -t "$TMP/base_0GenericAffine.mat" --float 0
 antsApplyTransforms -d 3 -i "$ATLAS/mask.nii.gz" -r "$FIXED" -o "$TMP/atlas_mask_base.nii.gz" \
